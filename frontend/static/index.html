@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Foundational Learning — Multi-Agent Tutor</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a;
+    --text: #e8eaed; --muted: #9aa4b2; --accent: #7c9eff; --good: #4ade80; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; justify-content: center; padding: 32px 16px;
+  }
+  main { width: 100%; max-width: 760px; }
+  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 0.85rem; }
+  input, textarea {
+    width: 100%; background: #0d0f14; border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 12px; font-size: 0.95rem; margin-bottom: 14px;
+  }
+  button {
+    background: var(--accent); color: #0d0f14; border: none; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600; cursor: pointer; font-size: 0.9rem;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .trace { font-family: ui-monospace, monospace; font-size: 0.8rem; color: var(--muted); margin: 4px 0; }
+  .trace b { color: var(--accent); }
+  .lesson { line-height: 1.6; white-space: pre-wrap; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.75rem;
+    background: rgba(124,158,255,0.15); color: var(--accent); margin-bottom: 10px;
+  }
+  .score-good { color: var(--good); font-weight: 600; }
+  .score-warn { color: var(--warn); font-weight: 600; }
+  #app { display: flex; flex-direction: column; gap: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🧠 Foundational Learning — Multi-Agent Tutor</h1>
+  <div class="subtitle">Assessor → Planner → Tutor ⇄ Critic → Quiz ⇄ Critic → Progress</div>
+  <div id="app"></div>
+</main>
+
+<script>
+const API = "";
+let session = { id: null, stage: "start", questions: [], curriculum: [] };
+
+const app = document.getElementById("app");
+
+function traceHtml(trace) {
+  return trace.map(t => `<div class="trace"><b>${t.agent}</b> → ${t.action}${t.detail ? " — " + escapeHtml(t.detail) : ""}</div>`).join("");
+}
+function escapeHtml(s) { return (s || "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function render() {
+  if (session.stage === "start") return renderStart();
+  if (session.stage === "diagnostic") return renderDiagnostic();
+  if (session.stage === "lesson") return renderLesson();
+  if (session.stage === "quiz") return renderQuiz();
+  if (session.stage === "complete") return renderComplete();
+}
+
+function renderStart() {
+  app.innerHTML = `
+    <div class="card">
+      <label>Your name</label>
+      <input id="name" placeholder="e.g. Sri" />
+      <label>What do you want to learn?</label>
+      <input id="goal" placeholder="e.g. the basics of Python loops" />
+      <button id="go">Start session</button>
+    </div>`;
+  document.getElementById("go").onclick = async () => {
+    const learner_name = document.getElementById("name").value || "Learner";
+    const goal = document.getElementById("goal").value || "a new topic";
+    setLoading("Assessor is preparing a diagnostic...");
+    const res = await postJSON("/session/start", { learner_name, goal });
+    session.id = res.session_id;
+    session.questions = res.diagnostic_questions;
+    session.trace = res.trace;
+    session.stage = "diagnostic";
+    render();
+  };
+}
+
+function renderDiagnostic() {
+  app.innerHTML = `
+    <div class="card">
+      <div class="badge">Assessor</div>
+      ${traceHtml(session.trace)}
+      <p>Answer these so I can gauge your starting point:</p>
+      ${session.questions.map((q, i) => `<label>${escapeHtml(q)}</label><input data-i="${i}" class="dq" />`).join("")}
+      <button id="submit">Submit answers</button>
+    </div>`;
+  document.getElementById("submit").onclick = async () => {
+    const answers = Array.from(document.querySelectorAll(".dq")).map(i => i.value);
+    setLoading("Assessor is classifying you, then Planner is building your curriculum...");
+    const res = await postJSON("/session/diagnostic", { session_id: session.id, answers });
+    applySessionView(res);
+    session.stage = "lesson";
+    render();
+  };
+}
+
+function renderLesson() {
+  app.innerHTML = `
+    <div class="card">
+      <div class="badge">${escapeHtml(session.level)} · gaps: ${escapeHtml((session.known_gaps||[]).join(", ") || "none")}</div>
+      <p><b>Curriculum:</b> ${session.curriculum.map(t => t === session.current_topic ? `<b>${escapeHtml(t)}</b>` : escapeHtml(t)).join(" → ")}</p>
+      ${traceHtml(session.trace)}
+    </div>
+    <div class="card">
+      <div class="badge">Tutor · ${escapeHtml(session.current_topic)}</div>
+      <div class="lesson">${escapeHtml(session.current_lesson)}</div>
+    </div>
+    <div class="card">
+      <div class="badge">Quiz</div>
+      ${session.current_quiz.map((q, i) => `<label>${escapeHtml(q.question)}</label><textarea data-i="${i}" class="qa" rows="2"></textarea>`).join("")}
+      <button id="submitQuiz">Submit answers</button>
+    </div>`;
+  document.getElementById("submitQuiz").onclick = async () => {
+    const answers = Array.from(document.querySelectorAll(".qa")).map(i => i.value);
+    setLoading("Quiz agent is grading, Progress agent is updating mastery...");
+    const res = await postJSON("/session/quiz", { session_id: session.id, answers });
+    applySessionView(res);
+    session.stage = res.stage === "complete" ? "complete" : "lesson";
+    render();
+  };
+}
+
+function renderQuiz() { renderLesson(); }
+
+function renderComplete() {
+  setLoading("Progress agent is writing your session summary...");
+  postJSON(`/session/${session.id}/finish`, {}, true).then(res => {
+    const rows = Object.values(res.progress).map(p =>
+      `<div>${escapeHtml(p.topic)}: <span class="${p.mastered ? 'score-good' : 'score-warn'}">${Math.round(p.best_score*100)}%${p.mastered ? " · mastered" : ""}</span></div>`
+    ).join("");
+    app.innerHTML = `
+      <div class="card">
+        <div class="badge">Session complete</div>
+        ${rows}
+      </div>
+      <div class="card">
+        <div class="badge">Progress summary</div>
+        <div class="lesson">${escapeHtml(res.summary)}</div>
+      </div>`;
+  });
+}
+
+function applySessionView(res) {
+  session.level = res.level;
+  session.known_gaps = res.known_gaps;
+  session.curriculum = res.curriculum;
+  session.current_topic = res.current_topic;
+  session.current_lesson = res.current_lesson;
+  session.current_quiz = res.current_quiz;
+  session.trace = res.trace;
+  session.progress = res.progress;
+  if (res.stage === "complete") session.stage = "complete";
+}
+
+function setLoading(msg) {
+  app.innerHTML = `<div class="card"><p>⏳ ${escapeHtml(msg)}</p></div>`;
+}
+
+async function postJSON(path, body, isPost) {
+  const opts = { method: "POST", headers: { "Content-Type": "application/json" } };
+  if (body && Object.keys(body).length) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+render();
+</script>
+</body>
+</html>
